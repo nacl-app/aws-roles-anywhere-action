@@ -1,0 +1,35 @@
+# IDEs
+.idea
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Certificates and keys (security sensitive)
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# AWS credentials
+.aws/
+credentials
+
+# Vault tokens
+.vault-token
+
+# Environment files
+.env
+.env.local
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/

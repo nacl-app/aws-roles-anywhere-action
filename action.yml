@@ -1,0 +1,133 @@
+name: "Vault → AWS RolesAnywhere Credentials"
+description: "Obtain temporary AWS credentials using a short-lived certificate issued by Vault PKI for AWS RolesAnywhere."
+author: "Joris Basiglio <joris.basiglio@gmail.com"
+branding:
+  icon: lock
+  color: blue
+
+inputs:
+  vault-addr:
+    description: "Vault address (https://vault.example.com)"
+    required: false
+    default: ""
+  vault-engine:
+    description: "Vault engine name"
+    required: false
+    default: ""
+  vault-issuer-role:
+    description: "Vault issuer role name"
+    required: false
+    default: ""
+  vault-token:
+    description: "Vault token"
+    required: false
+    default: ""
+  cert-cn:
+    description: "Certificate common name"
+    required: false
+    default: ""
+  aws-trust-anchor-arn:
+    description: "AWS RolesAnywhere Trust Anchor ARN"
+    required: false
+    default: ""
+  aws-profile-arn:
+    description: "AWS RolesAnywhere Profile ARN"
+    required: false
+    default: ""
+  aws-role-arn:
+    description: "AWS IAM Role ARN to assume"
+    required: false
+    default: ""
+  aws-region:
+    description: "AWS region"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: |
+        set -e
+        sudo apt-get update -y
+        sudo apt-get install -y jq curl
+
+    - name: Login to Vault and issue cert
+      id: issue
+      shell: bash
+      run: |
+        set -euo pipefail
+        get_input_or_env() {
+            local input_value="$1"
+            local env_name="$2"
+            local env_value="${!env_name:-}"
+            local fallback_value="${3:-}"
+            if [ -n "$input_value" ]; then
+              echo "$input_value"
+            elif [ -n "$env_value" ]; then
+              echo "$env_value"
+            elif [ -n "$fallback_value" ]; then
+              echo "$fallback_value"
+            else
+              echo "Missing required input/env for $env_name" >&2
+              exit 1
+            fi
+        }
+        echo "Validating parameters"
+        VAULT_ADDR=$(get_input_or_env "${{ inputs.vault-addr }}" "VAULT_ADDR")
+        VAULT_TOKEN=$(get_input_or_env "${{ inputs.vault-token }}" "VAULT_TOKEN")
+        VAULT_ENGINE=$(get_input_or_env "${{ inputs.vault-engine }}" "VAULT_ENGINE")
+        VAULT_ISSUER_ROLE=$(get_input_or_env "${{ inputs.vault-issuer-role }}" "VAULT_ISSUER_ROLE")
+        CERT_CN=$(get_input_or_env "${{ inputs.cert-cn }}" "CERT_CN")
+        
+        AWS_TRUST_ANCHOR_ARN=$(get_input_or_env "${{ inputs.aws-trust-anchor-arn }}" "AWS_TRUST_ANCHOR_ARN")
+        AWS_PROFILE_ARN=$(get_input_or_env "${{ inputs.aws-profile-arn }}" "AWS_PROFILE_ARN")
+        AWS_ROLE_ARN=$(get_input_or_env "${{ inputs.aws-role-arn}}" "AWS_ROLE_ARN")
+        AWS_REGION=$(get_input_or_env "${{ inputs.aws-region}}" "AWS_REGION" "us-east-1")
+        echo "AWS_TRUST_ANCHOR_ARN=$AWS_TRUST_ANCHOR_ARN" >> $GITHUB_ENV
+        echo "AWS_PROFILE_ARN=$AWS_PROFILE_ARN" >> $GITHUB_ENV
+        echo "AWS_ROLE_ARN=$AWS_ROLE_ARN" >> $GITHUB_ENV
+        echo "AWS_REGION=$AWS_REGION" >> $GITHUB_ENV
+        
+        echo "Logging into Vault"
+        echo "Requesting cert for $CERT_CN at $VAULT_ADDR"
+        cert=$(curl -s --request POST \
+          --header "X-Vault-Token: $VAULT_TOKEN" \
+          --data "{\"common_name\":\"$CERT_CN\",\"ttl\":\"1h\"}" \
+          "$VAULT_ADDR/v1/$VAULT_ENGINE/issue/$VAULT_ISSUER_ROLE")
+        
+        VOLUME_NAME="aws-ra-certs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        docker volume create "$VOLUME_NAME"
+        
+        docker run --rm -v "$VOLUME_NAME:/certs" alpine sh -c \
+          "echo '$(echo "$cert" | jq -r .data.certificate)' > /certs/ci.crt && \
+           echo '$(echo "$cert" | jq -r .data.private_key)' > /certs/ci.key"
+        
+        echo "VOLUME_NAME=$VOLUME_NAME" >> $GITHUB_ENV
+        echo "Certificates stored in Docker volume '$VOLUME_NAME'"
+
+    - name: Export AWS Credentials
+      shell: bash
+      run: |
+        awsCreds=$(docker run --rm \
+          -v "$VOLUME_NAME:/certs:ro" \
+          public.ecr.aws/rolesanywhere/credential-helper:latest \
+          credential-process --certificate /certs/ci.crt --private-key /certs/ci.key \
+          --trust-anchor-arn $AWS_TRUST_ANCHOR_ARN \
+          --profile-arn $AWS_PROFILE_ARN --role-arn $AWS_ROLE_ARN)
+
+        echo "AWS_ACCESS_KEY_ID=$(echo "$awsCreds" | jq -r .AccessKeyId)" >> $GITHUB_ENV
+        echo "AWS_SECRET_ACCESS_KEY=$(echo "$awsCreds" | jq -r .SecretAccessKey)" >> $GITHUB_ENV
+        echo "AWS_SESSION_TOKEN=$(echo "$awsCreds" | jq -r .SessionToken)" >> $GITHUB_ENV
+        echo "AWS credentials exported to environment"
+
+
+    - name: Cleanup (post-action)
+      if: always()
+      shell: bash
+      run: |
+        if [ -n "$VOLUME_NAME" ]; then
+          echo "Cleaning up Docker volume $VOLUME_NAME"
+          docker volume rm "$VOLUME_NAME" 2>/dev/null || true
+        fi
