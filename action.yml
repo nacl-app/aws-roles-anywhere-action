@@ -1,6 +1,6 @@
 name: "Vault → AWS RolesAnywhere Credentials"
 description: "Obtain temporary AWS credentials using a short-lived certificate issued by Vault PKI for AWS RolesAnywhere."
-author: "Joris Basiglio <joris.basiglio@gmail.com"
+author: "Joris Basiglio <joris.basiglio@gmail.com>"
 branding:
   icon: lock
   color: blue
@@ -96,14 +96,23 @@ runs:
           --header "X-Vault-Token: $VAULT_TOKEN" \
           --data "{\"common_name\":\"$CERT_CN\",\"ttl\":\"1h\"}" \
           "$VAULT_ADDR/v1/$VAULT_ENGINE/issue/$VAULT_ISSUER_ROLE")
-        
-        VOLUME_NAME="aws-ra-certs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+        cert_pem=$(echo "$cert" | jq -e -r '.data.certificate // empty') || {
+          echo "Error: Vault failed to return a certificate. Response: $cert" >&2
+          exit 1
+        }
+        key_pem=$(echo "$cert" | jq -e -r '.data.private_key // empty') || {
+          echo "Error: Vault failed to return a private key. Response: $cert" >&2
+          exit 1
+        }
+
+        RAND_SUFFIX=$(openssl rand -hex 8 2>/dev/null || echo "${RANDOM}-$$-$(date +%s)")
+        VOLUME_NAME="aws-ra-certs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RAND_SUFFIX}"
         docker volume create "$VOLUME_NAME"
-        
-        docker run --rm -v "$VOLUME_NAME:/certs" alpine sh -c \
-          "echo '$(echo "$cert" | jq -r .data.certificate)' > /certs/ci.crt && \
-           echo '$(echo "$cert" | jq -r .data.private_key)' > /certs/ci.key"
-        
+
+        printf '%s\n' "$cert_pem" | docker run --rm -i -v "$VOLUME_NAME:/certs" alpine sh -c 'cat > /certs/ci.crt'
+        printf '%s\n' "$key_pem" | docker run --rm -i -v "$VOLUME_NAME:/certs" alpine sh -c 'cat > /certs/ci.key'
+
         echo "VOLUME_NAME=$VOLUME_NAME" >> $GITHUB_ENV
         echo "Certificates stored in Docker volume '$VOLUME_NAME'"
 
