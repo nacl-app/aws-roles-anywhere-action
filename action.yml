@@ -110,8 +110,8 @@ runs:
         VOLUME_NAME="aws-ra-certs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RAND_SUFFIX}"
         docker volume create "$VOLUME_NAME"
 
-        printf '%s\n' "$cert_pem" | docker run --rm -i -v "$VOLUME_NAME:/certs" alpine sh -c 'cat > /certs/ci.crt'
-        printf '%s\n' "$key_pem" | docker run --rm -i -v "$VOLUME_NAME:/certs" alpine sh -c 'cat > /certs/ci.key'
+        printf '%s\n' "$cert_pem" | docker run --rm --log-driver=none -i -v "$VOLUME_NAME:/certs" alpine sh -c 'cat > /certs/ci.crt'
+        printf '%s\n' "$key_pem" | docker run --rm --log-driver=none -i -v "$VOLUME_NAME:/certs" alpine sh -c 'cat > /certs/ci.key'
 
         echo "VOLUME_NAME=$VOLUME_NAME" >> $GITHUB_ENV
         echo "Certificates stored in Docker volume '$VOLUME_NAME'"
@@ -119,7 +119,7 @@ runs:
     - name: Export AWS Credentials
       shell: bash
       run: |
-        awsCreds=$(docker run --rm \
+        awsCreds=$(docker run --rm --log-driver=none \
           -v "$VOLUME_NAME:/certs:ro" \
           public.ecr.aws/rolesanywhere/credential-helper:latest \
           credential-process --certificate /certs/ci.crt --private-key /certs/ci.key \
